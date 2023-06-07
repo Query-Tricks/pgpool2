@@ -437,6 +437,19 @@ pool_is_node_to_be_sent(POOL_QUERY_CONTEXT * query_context, int node_id)
 /*
  * Returns true if the DB node is needed to send query.
  * Intended to be called from VALID_BACKEND
+ *
+ * 이 함수는 `pool_is_node_to_be_sent_in_current_query`라는 이름을 가지고 있습니다.
+ * 이 함수는 `int` 타입의 `node_id`라는 매개변수를 받습니다.
+ * 이 함수는 DB 노드가 쿼리를 보낼 필요가 있는지 여부를 반환합니다.
+ * 이 함수는 `VALID_BACKEND`에서 호출될 의도로 작성되었습니다.
+ * 함수 내부에서 `POOL_SESSION_CONTEXT` 타입의 `sc` 변수가 선언됩니다.
+ * 그 다음에는 if문이 있어서 `RAW_MODE`가 참인 경우에만 실행됩니다.
+ * 그 안에서 `node_id`가 `REAL_MAIN_NODE_ID`와 같은 경우 true를 반환합니다.
+ * 그 다음에는 `pool_get_session_context` 함수를 호출하여 `sc` 변수를 초기화합니다.
+ * 만약 `sc`가 NULL이면 true를 반환합니다.
+ * 그 다음에는 if문이 있어서 `pool_is_query_in_progress` 함수가 참이고, `sc->query_context`가 NULL이 아닌 경우에만 실행됩니다.
+ * 그 안에서 `pool_is_node_to_be_sent` 함수를 호출하여 반환값을 반환합니다. 마지막으로, true를 반환합니다.
+ *
  */
 bool
 pool_is_node_to_be_sent_in_current_query(int node_id)
