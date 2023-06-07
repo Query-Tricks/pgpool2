@@ -331,6 +331,17 @@ pool_clear_node_to_be_sent(POOL_QUERY_CONTEXT * query_context)
 
 /*
  * Set all DB node map entry
+ *
+ * 이 함수는 `pool_setall_node_to_be_sent`라는 이름을 가지고 있습니다.
+ * 이 함수는 `POOL_QUERY_CONTEXT` 타입의 `query_context`라는 매개변수를 받습니다.
+ * 이 함수는 모든 DB 노드 맵 항목을 설정합니다.
+ * 함수 내부에서 `POOL_SESSION_CONTEXT` 타입의 `sc` 변수가 선언되고, `pool_get_session_context` 함수를 호출하여 초기화됩니다.
+ * 그 다음에는 `CHECK_QUERY_CONTEXT_IS_VALID` 매크로가 호출됩니다.
+ * 그 다음에는 for 루프가 시작되어 `NUM_BACKENDS`까지 반복됩니다. 이 루프 내에서 if문이 있어서 `private_backend_status[i]`가 `CON_UP`이거나 `CON_CONNECT_WAIT`인 경우에만 실행됩니다.
+ * 그 안에서 또 다른 if문이 있는데, 이 if문은 스트리밍 복제 모드에서만 실행됩니다.
+ * 이 if문은 노드가 기본 노드도 아니고 로드 밸런스 노드도 아닌 경우에 continue문을 실행하여 다음 반복으로 넘어갑니다.
+ * 마지막으로, `query_context->where_to_send[i]`가 true로 설정되고 for 루프가 종료됩니다. 함수의 마지막에는 return문이 있습니다.
+ *
  */
 void
 pool_setall_node_to_be_sent(POOL_QUERY_CONTEXT * query_context)
@@ -364,6 +375,15 @@ pool_setall_node_to_be_sent(POOL_QUERY_CONTEXT * query_context)
 
 /*
  * Return true if multiple nodes are targets
+ *
+ * 이 함수는 `pool_multi_node_to_be_sent`라는 이름을 가지고 있습니다. 이 함수는 `POOL_QUERY_CONTEXT` 타입의 `query_context`라는 매개변수를 받습니다.
+ * 이 함수는 여러 노드가 대상인 경우 true를 반환합니다.
+ * 함수 내부에서 `int` 타입의 `i`와 `cnt` 변수가 선언되고, `cnt`는 0으로 초기화됩니다. 그 다음에는 `CHECK_QUERY_CONTEXT_IS_VALID` 매크로가 호출됩니다.
+ * 그 다음에는 for 루프가 시작되어 `NUM_BACKENDS`까지 반복됩니다.
+ * 이 루프 내에서 if문이 있어서 `BACKEND_INFO(i).backend_status`가 `CON_UP`이거나 `CON_CONNECT_WAIT`이고, `query_context->where_to_send[i]`가 참인 경우에만 실행됩니다.
+ * 그 안에서 `cnt`가 증가하고, `cnt`가 1보다 큰 경우 true를 반환합니다.
+ * for 루프가 종료된 후에는 false를 반환합니다.
+ *
  */
 bool
 pool_multi_node_to_be_sent(POOL_QUERY_CONTEXT * query_context)
@@ -391,6 +411,15 @@ pool_multi_node_to_be_sent(POOL_QUERY_CONTEXT * query_context)
 
 /*
  * Return if the DB node is needed to send query
+ *
+ * 이 함수는 `pool_is_node_to_be_sent`라는 이름을 가지고 있습니다.
+ * 이 함수는 `POOL_QUERY_CONTEXT` 타입의 `query_context`와 `int` 타입의 `node_id`라는 두 개의 매개변수를 받습니다.
+ * 이 함수는 DB 노드가 쿼리를 보낼 필요가 있는지 여부를 반환합니다.
+ * 함수 내부에서 `CHECK_QUERY_CONTEXT_IS_VALID` 매크로가 호출됩니다.
+ * 그 다음에는 if문이 있어서 `node_id`가 0보다 작거나 `MAX_NUM_BACKENDS`보다 크거나 같은 경우에만 실행됩니다.
+ * 그 안에서 `ereport` 함수가 호출되어 오류 메시지와 세부 정보를 출력합니다.
+ * 마지막으로, `query_context->where_to_send[node_id]`의 값을 반환합니다.
+ *
  */
 bool
 pool_is_node_to_be_sent(POOL_QUERY_CONTEXT * query_context, int node_id)
