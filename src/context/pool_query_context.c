@@ -40,6 +40,26 @@
 
 /*
  * Where to send query
+ *
+ * PostgreSQL의 특정 함수들을 포함하는 C 코드 스니펫입니다. 이 코드는 데이터베이스 쿼리를 어디로 보낼지 결정하는 데 사용됩니다.
+ *
+ * 주요 열거형인 POOL_DEST는 쿼리를 보낼 위치를 지정합니다. 다음과 같은 값들을 가질 수 있습니다:
+ *
+ * POOL_PRIMARY: 주 서버로 쿼리를 보냅니다.
+ * POOL_STANDBY: 대기 서버로 쿼리를 보냅니다.
+ * POOL_EITHER: 주 서버 또는 대기 서버 어느 쪽으로든 쿼리를 보낼 수 있습니다.
+ * POOL_BOTH: 주 서버와 대기 서버 양쪽으로 쿼리를 보냅니다.
+ * CHECK_QUERY_CONTEXT_IS_VALID 매크로는 query_context가 유효한지 확인하고, 유효하지 않으면 오류를 발생시킵니다.
+ *
+ * 다음은 코드에 정의된 몇 가지 함수입니다:
+ *
+ * send_to_where: 노드를 인자로 받아 쿼리를 보낼 위치를 결정하는 함수입니다.
+ * where_to_send_deallocate: 노드를 인자로 받아 쿼리를 보낼 위치를 결정하고, 해당 위치로 할당을 해제하는 함수입니다.
+ * where_to_send_main_replica: 쿼리 컨텍스트와 쿼리, 노드를 인자로 받아 메인 레플리카로 쿼리를 보내는 함수입니다.
+ * where_to_send_native_replication: 쿼리 컨텍스트와 쿼리, 노드를 인자로 받아 네이티브 복제로 쿼리를 보내는 함수입니다.
+ * 나머지 함수들은 보조적인 기능을 제공하거나 코드의 특정 부분에서 사용되는 보조 함수들입니다.
+ *
+ * 이 코드 스니펫은 쿼리 컨텍스트와 노드에 따라 쿼리를 주 서버, 대기 서버, 또는 양쪽으로 보낼 수 있도록 하는 로드 밸런싱과 관련된 로직을 구현합니다.
  */
 typedef enum
 {
@@ -74,6 +94,18 @@ static char* get_associated_object_from_dml_adaptive_relations
 
 /*
  * Create and initialize per query session context
+ *
+ * PostgreSQL에서 쿼리 세션 컨텍스트를 생성하고 초기화하는 함수인 pool_init_query_context를 나타냅니다.
+ * 함수의 목적은 메모리 컨텍스트를 생성하고, 해당 컨텍스트 내에서 POOL_QUERY_CONTEXT라는 구조체를 할당하고 초기화하여 반환하는 것입니다.
+ * 코드를 살펴보면 다음과 같은 작업을 수행합니다:
+ * AllocSetContextCreate 함수를 사용하여 QueryContext 컨텍스트 내에서 작은 크기의 메모리 컨텍스트(memory_context)를 생성합니다. 이 컨텍스트는 쿼리 세션에 대한 메모리 할당을 관리하는 데 사용됩니다.
+ * MemoryContextSwitchTo 함수를 사용하여 이전의 메모리 컨텍스트를 저장하고, 새로 생성한 memory_context로 전환합니다.
+ * palloc0 함수를 사용하여 POOL_QUERY_CONTEXT 구조체의 메모리를 할당합니다. palloc0 함수는 메모리를 할당하고 해당 메모리를 모두 0으로 초기화합니다. 이로써 모든 구조체 멤버는 초기화된 상태가 됩니다.
+ * memory_context에 할당된 메모리를 POOL_QUERY_CONTEXT 구조체의 memory_context 멤버에 할당합니다.
+ * 이전의 메모리 컨텍스트로 다시 전환하여 초기 메모리 컨텍스트로 돌아갑니다.
+ * 초기화된 POOL_QUERY_CONTEXT 구조체를 반환합니다.
+ * 이 함수는 PostgreSQL의 쿼리 세션에 대한 컨텍스트를 생성하고 초기화하기 위해 호출됩니다. 이 컨텍스트는 쿼리 실행 중에 필요한 메모리 관리를 용이하게 하며, 쿼리 수행에 필요한 추가적인 정보를 저장할 수 있도록 합니다.
+ *
  */
 POOL_QUERY_CONTEXT *
 pool_init_query_context(void)
@@ -95,6 +127,23 @@ pool_init_query_context(void)
 
 /*
  * Destroy query context
+ *
+ * 이 함수는 `pool_query_context_destroy`라는 이름의 함수로, `POOL_QUERY_CONTEXT` 타입의 `query_context` 포인터를 인자로 받습니다.
+ * 이 함수는 `query_context`가 가리키는 쿼리 컨텍스트를 제거하는 역할을 합니다.
+ * 함수 내부에서는 먼저 `session_context` 변수를 선언하고, `query_context`가 `NULL`이 아닌 경우 다음 작업을 수행합니다.
+ * 1. `memory_context` 변수에 `query_context->memory_context` 값을 저장합니다.
+ * 2. 디버그 메시지를 출력합니다.
+ * 3. `pool_get_session_context(false)` 함수를 호출하여 세션 컨텍스트를 가져옵니다.
+ * 4. `pool_unset_query_in_progress()` 함수를 호출하여 진행 중인 쿼리 플래그를 해제합니다.
+ * 5. `pool_is_command_success()` 함수가 거짓을 반환하고 `query_context->pg_terminate_backend_conn`이 참인 경우 다음 작업을 수행합니다.
+ *     1. 디버그 메시지를 출력합니다.
+ *     2. `pool_unset_connection_will_be_terminated(query_context->pg_terminate_backend_conn)` 함수를 호출하여 연결 종료 플래그를 해제합니다.
+ * 6. `query_context->pg_terminate_backend_conn`과 `query_context->original_query`를 `NULL`로 설정합니다.
+ * 7. `session_context->query_context`를 `NULL`로 설정합니다.
+ * 8. `pfree(query_context)` 함수를 호출하여 `query_context`가 가리키는 메모리를 해제합니다.
+ * 9. `MemoryContextDelete(memory_context)` 함수를 호출하여 메모리 컨텍스트를 삭제합니다.
+ * 이 함수는 주어진 쿼리 컨텍스트와 관련된 모든 리소스를 정리하고 메모리를 해제하는 역할을 합니다.
+ *
  */
 void
 pool_query_context_destroy(POOL_QUERY_CONTEXT * query_context)
@@ -127,6 +176,16 @@ pool_query_context_destroy(POOL_QUERY_CONTEXT * query_context)
 
 /*
  * Perform shallow copy of given query context. Used in parse_before_bind.
+ *
+ * 이 함수는 `pool_query_context_shallow_copy`라는 이름의 함수로, `POOL_QUERY_CONTEXT` 타입의 `query_context` 포인터를 인자로 받습니다.
+ * 이 함수는 `query_context`가 가리키는 쿼리 컨텍스트의 얕은 복사본을 만들어 반환하는 역할을 합니다.
+ * 함수 내부에서는 먼저 `qc`와 `memory_context` 변수를 선언합니다. 그 다음 `pool_init_query_context()` 함수를 호출하여 새로운 쿼리 컨텍스트를 초기화하고 `qc` 변수에 저장합니다.
+ *  `memory_context` 변수에는 `qc->memory_context` 값을 저장합니다.
+ * 그 다음 `memcpy(qc, query_context, sizeof(POOL_QUERY_CONTEXT))` 함수를 호출하여 `query_context`가 가리키는 쿼리 컨텍스트의 내용을 `qc`가 가리키는 쿼리 컨텍스트로 복사합니다.
+ * 이 작업은 얕은 복사(shallow copy)이므로 포인터 변수가 가리키는 메모리 영역은 복사되지 않습니다.
+ * 마지막으로 `qc->memory_context`에 `memory_context` 값을 저장하고 `qc`를 반환합니다.
+ * 이 함수는 주어진 쿼리 컨텍스트의 얕은 복사본을 만들어 반환하는 역할을 합니다.
+ *
  */
 POOL_QUERY_CONTEXT *
 pool_query_context_shallow_copy(POOL_QUERY_CONTEXT * query_context)
@@ -143,6 +202,32 @@ pool_query_context_shallow_copy(POOL_QUERY_CONTEXT * query_context)
 
 /*
  * Start query
+ *
+ * 이 함수는 `pool_start_query`라는 이름의 함수로, `POOL_QUERY_CONTEXT` 타입의 `query_context` 포인터, `char` 타입의 `query` 포인터,
+ * `int` 타입의 `len`, 그리고 `Node` 타입의 `node` 포인터를 인자로 받습니다. 이 함수는 쿼리를 시작하기 전에 쿼리 컨텍스트를 초기화하는 역할을 합니다.
+ *
+ * 함수 내부에서는 먼저 `session_context` 변수를 선언하고, `query_context`가 `NULL`이 아닌 경우 다음 작업을 수행합니다.
+ *
+ * 1. `old_context` 변수에 현재 메모리 컨텍스트를 저장합니다.
+ * 2. `pool_get_session_context(false)` 함수를 호출하여 세션 컨텍스트를 가져옵니다.
+ * 3. `MemoryContextSwitchTo(query_context->memory_context)` 함수를 호출하여 메모리 컨텍스트를 전환합니다.
+ * 4. `query_context->original_length`에 `len` 값을 저장합니다.
+ * 5. `query_context->rewritten_length`에 `-1`을 저장합니다.
+ * 6. `pstrdup(query)` 함수를 호출하여 쿼리 문자열을 복제하고 `query_context->original_query`에 저장합니다.
+ * 7. `query_context->rewritten_query`에 `NULL`을 저장합니다.
+ * 8. `query_context->parse_tree`에 `node` 값을 저장합니다.
+ * 9. `query_context->virtual_main_node_id`와 `query_context->load_balance_node_id`에 `my_main_node_id` 값을 저장합니다.
+ * 10. `query_context->is_cache_safe`에 거짓을 저장합니다.
+ * 11. `query_context->num_original_params`에 `-1`을 저장합니다.
+ * 12. 만약 메모리 캐시가 활성화되어 있으면(`pool_config->memory_cache_enabled`) 다음 작업을 수행합니다.
+ *     1. `pool_create_temp_query_cache(query)` 함수를 호출하여 임시 쿼리 캐시를 생성하고 `query_context->temp_cache`에 저장합니다.
+ * 13. `pool_set_query_in_progress()` 함수를 호출하여 진행 중인 쿼리 플래그를 설정합니다.
+ * 14. `query_context->skip_cache_commit`에 거짓을 저장합니다.
+ * 15. `session_context->query_context`에 `query_context` 값을 저장합니다.
+ * 16. 마지막으로 `MemoryContextSwitchTo(old_context)` 함수를 호출하여 이전 메모리 컨텍스트로 전환합니다.
+ *
+ * 이 함수는 주어진 쿼리 컨텍스트와 관련된 변수들을 초기화하는 역할을 합니다.
+ *
  */
 void
 pool_start_query(POOL_QUERY_CONTEXT * query_context, char *query, int len, Node *node)
@@ -175,6 +260,14 @@ pool_start_query(POOL_QUERY_CONTEXT * query_context, char *query, int len, Node 
 
 /*
  * Specify DB node to send query
+ *
+ * 이 함수는 `pool_set_node_to_be_sent`라는 이름의 함수로, `POOL_QUERY_CONTEXT` 타입의 `query_context` 포인터와 `int` 타입의 `node_id`를 인자로 받습니다.
+ * 이 함수는 쿼리를 전송할 DB 노드를 지정하는 역할을 합니다.
+ * 함수 내부에서는 먼저 `CHECK_QUERY_CONTEXT_IS_VALID` 매크로를 호출하여 쿼리 컨텍스트가 유효한지 확인합니다.
+ * 그 다음 `node_id` 값이 0보다 작거나 `MAX_NUM_BACKENDS` 이상인 경우 오류 메시지를 출력하고 함수를 종료합니다.
+ * 그 다음 `query_context->where_to_send[node_id]`에 참을 저장하고 함수를 종료합니다.
+ * 이 함수는 주어진 쿼리 컨텍스트의 `where_to_send` 배열에서 지정된 노드의 값을 참으로 설정하는 역할을 합니다.
+ *
  */
 void
 pool_set_node_to_be_sent(POOL_QUERY_CONTEXT * query_context, int node_id)
@@ -193,6 +286,14 @@ pool_set_node_to_be_sent(POOL_QUERY_CONTEXT * query_context, int node_id)
 
 /*
  * Unspecified DB node to send query
+ *
+ * 이 함수는 `pool_unset_node_to_be_sent`라는 이름의 함수로, `POOL_QUERY_CONTEXT` 타입의 `query_context` 포인터와 `int` 타입의 `node_id`를 인자로 받습니다.
+ * 이 함수는 쿼리를 전송할 DB 노드 지정을 취소하는 역할을 합니다.
+ * 함수 내부에서는 먼저 `CHECK_QUERY_CONTEXT_IS_VALID` 매크로를 호출하여 쿼리 컨텍스트가 유효한지 확인합니다.
+ * 그 다음 `node_id` 값이 0보다 작거나 `MAX_NUM_BACKENDS` 이상인 경우 오류 메시지를 출력하고 함수를 종료합니다.
+ * 그 다음 `query_context->where_to_send[node_id]`에 거짓을 저장하고 함수를 종료합니다.
+ * 이 함수는 주어진 쿼리 컨텍스트의 `where_to_send` 배열에서 지정된 노드의 값을 거짓으로 설정하는 역할을 합니다.
+ *
  */
 void
 pool_unset_node_to_be_sent(POOL_QUERY_CONTEXT * query_context, int node_id)
@@ -211,6 +312,13 @@ pool_unset_node_to_be_sent(POOL_QUERY_CONTEXT * query_context, int node_id)
 
 /*
  * Clear DB node map
+ *
+ * 이 함수는 `pool_clear_node_to_be_sent`라는 이름의 함수로, `POOL_QUERY_CONTEXT` 타입의 `query_context` 포인터를 인자로 받습니다.
+ * 이 함수는 쿼리를 전송할 DB 노드 지정을 모두 취소하는 역할을 합니다.
+ * 함수 내부에서는 먼저 `CHECK_QUERY_CONTEXT_IS_VALID` 매크로를 호출하여 쿼리 컨텍스트가 유효한지 확인합니다.
+ * 그 다음 `memset(query_context->where_to_send, false, sizeof(query_context->where_to_send))` 함수를 호출하여 `where_to_send` 배열의 모든 값을 거짓으로 설정하고 함수를 종료합니다.
+ * 이 함수는 주어진 쿼리 컨텍스트의 `where_to_send` 배열의 모든 값을 거짓으로 설정하는 역할을 합니다.
+ *
  */
 void
 pool_clear_node_to_be_sent(POOL_QUERY_CONTEXT * query_context)
@@ -2214,7 +2322,7 @@ where_to_send_native_replication(POOL_QUERY_CONTEXT * query_context, char *query
 				}
 			}
 		}
-			
+
 		/*
 		 * If a writing function call is used or replicate_select is true, we
 		 * have to send to all nodes since the function may modify database.
