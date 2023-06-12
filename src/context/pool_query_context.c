@@ -472,6 +472,17 @@ pool_is_node_to_be_sent_in_current_query(int node_id)
 
 /*
  * Returns virtual main DB node id,
+ *
+ * 이 함수는 가상 메인 DB 노드의 ID를 반환하는 역할을 합니다.
+ * 먼저, 현재 장애 조치(failover)가 진행 중인지 확인합니다. 만약 그렇다면 세션을 중단하고 종료합니다.
+ * 그 후, 세션 컨텍스트를 가져옵니다. 세션 컨텍스트가 없다면 실제 메인 노드의 ID를 반환합니다.
+ * 세션 컨텍스트와 진행 중인 쿼리 컨텍스트가 모두 존재하는 경우, 가상 메인 노드의 ID를 가져옵니다.
+ * 이때, 스트리밍 레플리케이션 모드(SL_MODE)인 경우 특별한 처리가 필요합니다.
+ * 가상 메인 노드의 ID가 주 노드(primary node)의 ID나 로드 밸런스 노드의 ID와 같지 않다면, 이는 아직 가상 메인 노드의 ID가 설정되지 않았음을 의미합니다.
+ * 그러나 예외적인 경우로서 pg_terminate_backend() 함수를 처리하기 위해 쿼리를 전달해야 할 노드가 주 노드나 로드 밸런스 노드가 아닌 경우에는 주 노드의 ID를 반환합니다.
+ * 세션 컨텍스트가 존재하지 않는 경우, 네이티브 복제(replication) 모드인 경우 주 노드의 ID가 존재한다면 주 노드의 ID를 반환하고, 그렇지 않으면 my_main_node_id 값을 반환합니다.
+ * 이 값은 마지막으로 설정된 실제 메인 노드의 ID를 나타냅니다.
+ *
  */
 int
 pool_virtual_main_db_node_id(void)
@@ -553,6 +564,13 @@ pool_virtual_main_db_node_id(void)
 
 /*
  * Set the destination for the current query to the specific backend node.
+ *
+ * 이 함수는 현재 쿼리의 목적지를 지정된 백엔드 노드로 설정하는 역할을 합니다.
+ * 먼저, 함수는 유효한 쿼리 컨텍스트가 있는지 확인합니다. 유효하지 않은 경우 오류가 발생합니다.
+ * 그 후, 디버그 메시지를 출력하여 쿼리 목적지를 지정된 백엔드 노드로 강제로 설정한다는 사실을 알립니다.
+ * `pool_set_node_to_be_sent` 함수를 호출하여 쿼리 컨텍스트의 목적지 노드를 지정된 백엔드 ID로 설정합니다.
+ * 마지막으로, `set_virtual_main_node` 함수를 호출하여 가상 메인 노드를 설정합니다.
+ *
  */
 void
 pool_force_query_node_to_backend(POOL_QUERY_CONTEXT * query_context, int backend_id)
@@ -568,6 +586,22 @@ pool_force_query_node_to_backend(POOL_QUERY_CONTEXT * query_context, int backend
 
 /*
  * Decide where to send queries(thus expecting response)
+ *
+ * 이 함수는 쿼리를 보낼 대상을 결정하는 역할을 합니다.
+ * 먼저, 유효한 쿼리 컨텍스트가 있는지 확인합니다. 유효하지 않은 경우 오류가 발생합니다.
+ * 다음으로, DB 노드 맵을 초기화합니다.
+ * RAW 모드에서는 주 노드(REAL_MAIN_NODE_ID)에만 쿼리를 보내므로, 주 노드를 목적지로 설정합니다.
+ * 메인 레플리카 모드에서는 다음과 같이 처리합니다.
+ * - 쿼리가 여러 문으로 구성된 경우, 스트리밍 레플리케이션 모드에서는 주 서버(primary server)로만 보내야 하므로 주 서버를 목적지로 설정합니다.
+ * - 그렇지 않은 경우에는 `where_to_send_main_replica` 함수를 호출하여 쿼리를 어느 노드로 보낼지 결정합니다.
+ * 네이티브 복제(replication) 모드에서는 다음과 같이 처리합니다.
+ * - 쿼리가 여러 문으로 구성된 경우, 모든 노드에 쿼리를 보내야 하므로 모든 노드를 목적지로 설정합니다.
+ * - 그렇지 않은 경우에는 `where_to_send_native_replication` 함수를 호출하여 쿼리를 어느 노드로 보낼지 결정합니다.
+ * 만약 pgpool-II 모드가 알려지지 않은 모드라면 경고 메시지를 출력하고 함수를 종료합니다.
+ * 마지막으로, `IsA(node, DeallocateStmt)` 또는 `IsA(node, ExecuteStmt)`를 사용하여 현재 노드가 DEALLOCATE 문이나 EXECUTE 문인지 확인합니다.
+ * 해당되는 경우 `where_to_send_deallocate` 함수를 호출하여 목적지를 결정합니다.
+ * 마지막으로, `set_virtual_main_node` 함수를 호출하여 `where_to_send` 맵에 따라 가상 메인 노드를 설정합니다.
+ *
  */
 void
 pool_where_to_send(POOL_QUERY_CONTEXT * query_context, char *query, Node *node)
